@@ -47,3 +47,33 @@ Users should be able to upload VSIX files themselves to make them available for 
 
 ### VSCode server in devcontainer
 VSCode attempts to download the VSCode server component for the remote machine from GitHub, I think. That won't be reachable. If you cant change this download base url, what's been shown to work is simply putting the code server archive into the special ~/.config/code or whatever special folder where VSCode would download it. VSCode thinks it downloaded it itself and pushes it onto the server.
+
+## Usage
+
+Layout: `vscodeoffline/` is LOLINTERNETZ/vscodeoffline with small changes (configurable `URLROOT`, extension list,
+binary/target-platform filters, dependency download, version pruning) plus `vscoffline/offline.py` (uploads, bundle
+import, frontend API). `frontend/` is the React UI, `extension/` the OfflineMarketplace VS Code extension.
+
+### Internet machine
+
+1. Edit `artifacts.txt` (dependencies and extension packs are fetched automatically).
+2. `scripts/download.sh` mirrors VS Code (.deb, .tar.gz, server for linux-x64/alpine, alpine CLI) and the
+   extensions into `artifacts/`, and writes an uncompressed `bundles/vscode-offline-<date>.tar`.
+   Binaries and target platforms are set in `docker-compose.yml` (`--binaries`, `--target-platforms`).
+3. First time only: `docker compose build gallery && docker save <image> -o gallery.tar` to carry the image over.
+
+### Offline machine
+
+1. `scripts/make-cert.sh vscode-marketplace.internal` creates `certs/ca.crt` and a server certificate
+   (or put your own `certs/server.crt` and `certs/server.key` there).
+2. `cp .env.example .env`, set `PUBLIC_URL`, then `docker compose up -d gallery`.
+3. Open the URL, go to *Upload*, and import the bundle tar. Re-importing newer bundles adds new versions and deletes old
+   extension versions. Users can upload their own VSIX files there too; those are marked private, so VS Code installs
+   them without a marketplace signature, and they can never replace a mirrored marketplace extension.
+
+### Clients
+
+Install VS Code from *Downloads*, then the OfflineMarketplace extension (`code --install-extension offline-marketplace.vsix`,
+also linked there). It asks for the URL, patches `product.json` (using sudo if necessary), offers to import
+`certs/ca.crt` when the certificate is not trusted, sets `remote.serverDownloadBaseUrl` and pre-fills the Dev Containers
+server cache. Restart VS Code afterwards.

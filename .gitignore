@@ -1,0 +1,9 @@
+openvsx/
+artifacts/
+bundles/
+certs/
+.env
+node_modules/
+dist/
+out/
+*.vsix

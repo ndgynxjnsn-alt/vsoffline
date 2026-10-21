@@ -1,0 +1,7 @@
+artifacts/*
+__pycache__/
+temp/
+venv/
+.vscode/*
+.env
+.venv

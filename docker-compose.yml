@@ -1,0 +1,34 @@
+services:
+
+  # Internet connected machine: `scripts/download.sh` runs this once and tars the result
+  sync:
+    profiles: ["online"]
+    build:
+      context: ./vscodeoffline
+      dockerfile: ./vscoffline/vscsync/Dockerfile
+    volumes:
+      - ./artifacts/:/artifacts/
+      - ./artifacts.txt:/config/artifacts.txt:ro
+    environment:
+      SYNCARGS: >-
+        --update-binaries
+        --binaries linux-deb-x64,linux-x64,server-linux-x64,server-linux-alpine,cli-alpine-x64
+        --update-extensions
+        --update-malicious-extensions
+        --extension-list /config/artifacts.txt
+        --target-platforms linux-x64,alpine-x64
+        --vscode-version 1.105.0
+
+  # Air-gapped machine: gallery, update server and web frontend
+  gallery:
+    build:
+      context: .
+      dockerfile: docker/gallery.Dockerfile
+    restart: unless-stopped
+    ports:
+      - 443:443
+    volumes:
+      - ./artifacts/:/artifacts/
+      - ./certs/:/certs/:ro
+    environment:
+      URLROOT: ${PUBLIC_URL:?Set PUBLIC_URL in .env}

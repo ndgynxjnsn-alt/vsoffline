@@ -1,0 +1,12 @@
+# Extensions mirrored by the downloader, one identifier per line.
+# Extension packs and dependencies (e.g. Pylance for Python) are pulled in automatically.
+ms-python.python
+ms-python.vscode-pylance
+ms-toolsai.jupyter
+ms-vscode.cpptools
+ms-vscode-remote.remote-containers
+ms-azuretools.vscode-docker
+esbenp.prettier-vscode
+dbaeumer.vscode-eslint
+redhat.vscode-yaml
+eamodio.gitlens
