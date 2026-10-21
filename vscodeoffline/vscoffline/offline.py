@@ -285,12 +285,20 @@ class BundleImporter(object):
 
     def _merge_installers(self, source):
         count = 0
-        for root, _, files in os.walk(source):
-            target = os.path.join(vsc.ARTIFACTS_INSTALLERS, os.path.relpath(root, source))
+        for latestpath in glob.glob(os.path.join(source, '*', '*', 'latest.json')):
+            updatedir = os.path.dirname(latestpath)
+            target = os.path.join(vsc.ARTIFACTS_INSTALLERS, os.path.relpath(updatedir, source))
+            incoming = vsc.Utility.load_json(latestpath)
+            current = vsc.Utility.load_json(os.path.join(target, 'latest.json'))
+            # Pruning deletes everything but latest, so never let an older bundle win
+            if not incoming or (current and current.get('timestamp', 0) > incoming.get('timestamp', 0)):
+                log.info(f'Import skips installer {updatedir}, current one is newer')
+                continue
             os.makedirs(target, exist_ok=True)
-            for file in files:
-                os.replace(os.path.join(root, file), os.path.join(target, file))
+            for file in vsc.Utility.files_in_folder(updatedir):
+                os.replace(os.path.join(updatedir, file), os.path.join(target, file))
                 count += 1
+            vsc.Utility.prune_installer_versions(target)
         return count
 
     def _merge_top_files(self, source):

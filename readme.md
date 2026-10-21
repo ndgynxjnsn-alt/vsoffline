@@ -68,7 +68,7 @@ import, frontend API). `frontend/` is the React UI, `extension/` the OfflineMark
    (or put your own `certs/server.crt` and `certs/server.key` there).
 2. `cp .env.example .env`, set `PUBLIC_URL`, then `docker compose up -d gallery`.
 3. Open the URL, go to *Upload*, and import the bundle tar. Re-importing newer bundles adds new versions and deletes old
-   extension versions. Users can upload their own VSIX files there too; those are marked private, so VS Code installs
+   extension versions and old VS Code installers/servers, so clients have to update to keep Dev Containers working. Users can upload their own VSIX files there too; those are marked private, so VS Code installs
    them without a marketplace signature, and they can never replace a mirrored marketplace extension.
 
 ### Clients

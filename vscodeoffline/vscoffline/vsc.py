@@ -186,6 +186,21 @@ class Utility:
                 shutil.rmtree(os.path.join(extensiondir, folder))
 
     @staticmethod
+    def prune_installer_versions(updatedir: str) -> None:
+        """
+        Removes installer payloads and commit manifests of an installer/quality folder not referenced by its latest.json
+        """
+        latest = Utility.load_json(os.path.join(updatedir, "latest.json"))
+        if not latest or not latest.get("name"):
+            return
+        keep = {"latest.json", f"{latest['version']}.json"}
+        keep.update(pathlib.Path(path).name for path in pathlib.Path(updatedir).glob(f"vscode-{latest['name']}.*"))
+        for file in Utility.files_in_folder(updatedir):
+            if file not in keep:
+                log.info(f"Removing old installer {file} of {updatedir}")
+                os.remove(os.path.join(updatedir, file))
+
+    @staticmethod
     def seconds_to_human_time(seconds: int) -> str:
         return str(datetime.timedelta(seconds=seconds))
 

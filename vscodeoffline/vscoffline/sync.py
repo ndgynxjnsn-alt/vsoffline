@@ -809,6 +809,8 @@ if __name__ == '__main__':
                     if result:
                         versions[idkey].save_state(
                             config.artifactdir_installers)
+                        vsc.Utility.prune_installer_versions(os.path.join(
+                            config.artifactdir_installers, versions[idkey].identity, versions[idkey].quality))
 
         if config.checkspecified:
             log.info('Syncing VS Code Specified Extensions')
