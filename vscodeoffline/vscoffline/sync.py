@@ -67,7 +67,17 @@ class VSCUpdateDefinition(object):
 
         url = vsc.URL_BINUPDATES + \
             f"{self.identity}/{self.quality}/{old_commit_id}"
+        return self._check_url(url)
 
+    def check_for_commit(self, commit_id):
+        """
+        Look up the build of a specific commit, e.g. the server matching a client
+        """
+        url = vsc.URL_BINVERSIONS + \
+            f"commit:{commit_id}/{self.identity}/{self.quality}"
+        return self._check_url(url)
+
+    def _check_url(self, url):
         log.debug(f'Update url {url}')
         result = requests.get(url, allow_redirects=True, timeout=vsc.TIMEOUT)
         self.checkedForUpdate = True
@@ -345,7 +355,20 @@ class VSCUpdates(object):
 
     @staticmethod
     def latest_versions(insider=False, identities=None):
+        """
+        With identities, all of them are pinned to the commit of the first one, so clients and the
+        VS Code server they need (which is requested by commit) always match
+        """
         versions = {}
+        pinned = {}
+        if identities:
+            for quality in vsc.QUALITIES:
+                if quality == 'insider' and not insider:
+                    continue
+                reference = VSCUpdates._definition(identities[0], quality)
+                if reference and reference.check_for_update():
+                    log.info(f'Pinning {quality} builds to {reference.name} ({reference.version}) of {reference.identity}')
+                    pinned[quality] = reference.version
         for platform in vsc.PLATFORMS:
             for architecture in vsc.ARCHITECTURES:
                 for buildtype in vsc.BUILDTYPES:
@@ -362,10 +385,24 @@ class VSCUpdates(object):
                             platform, architecture, buildtype, quality)
                         if identities and ver.identity not in identities:
                             continue
-                        ver.check_for_update()
+                        if quality in pinned:
+                            ver.check_for_commit(pinned[quality])
+                        else:
+                            ver.check_for_update()
                         log.info(ver)
                         versions[f'{ver.identity}-{ver.quality}'] = ver
         return versions
+
+    @staticmethod
+    def _definition(identity, quality):
+        for platform in vsc.PLATFORMS:
+            for architecture in vsc.ARCHITECTURES:
+                for buildtype in vsc.BUILDTYPES:
+                    ver = VSCUpdateDefinition(platform, architecture, buildtype, quality)
+                    if ver.identity == identity:
+                        return ver
+        log.warning(f'Unknown binary {identity}')
+        return None
 
     @staticmethod
     def signal_updated(artifactdir):

@@ -412,7 +412,10 @@ class APIHealth(object):
 
 class VSCGalleryLatest(object):
     """
-    Implements product.json extensionsGallery.extensionUrlTemplate ({url}/_gallery/{publisher}/{name}/latest)
+    Latest version of one extension, used by VS Code for update checks. Served at the gallery manifest's
+    ExtensionLatestVersionUriTemplate ({serviceUrl}/vscode/{publisher}/{name}/latest) and at
+    product.json extensionsGallery.extensionUrlTemplate ({url}/_gallery/{publisher}/{name}/latest).
+    A 404 makes VS Code treat the extension as unavailable, so it is never updated.
     """
 
     def __init__(self, gallery):
@@ -425,6 +428,15 @@ class VSCGalleryLatest(object):
                 resp.media = ext
                 return
         resp.status = falcon.HTTP_404
+
+
+class VSCStatistics(object):
+    """
+    Install/update statistics reported by VS Code ({serviceUrl}/publishers/.../stats). Accepted and ignored
+    """
+
+    def on_post(self, req, resp, publisher, name, version):
+        resp.status = falcon.HTTP_200
 
 
 class VSCResource(object):
@@ -466,6 +478,9 @@ def add_routes(application, gallery):
     application.add_route('/api/upload/vsix', APIUploadVSIX(gallery))
     application.add_route('/api/import', APIImportBundle(gallery))
     application.add_route('/_gallery/{publisher}/{name}/latest', VSCGalleryLatest(gallery))
+    application.add_route('/_apis/public/gallery/vscode/{publisher}/{name}/latest', VSCGalleryLatest(gallery))
+    application.add_route('/_apis/public/gallery/publishers/{publisher}/extensions/{name}/{version}/stats',
+                          VSCStatistics())
     application.add_route('/resources/{publisher}/{name}/{version}/{path:path}', VSCResource())
     if os.path.isdir(CLIENT_DIR):
         application.add_static_route('/client/', CLIENT_DIR)

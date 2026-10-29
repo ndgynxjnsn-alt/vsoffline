@@ -18,6 +18,7 @@ export class RequestError extends Error {
   constructor(
     message: string,
     readonly code?: string,
+    readonly status?: number,
   ) {
     super(message);
   }
@@ -31,7 +32,7 @@ export class RequestError extends Error {
  * GET with redirects. Uses Node's http(s) modules, which VS Code patches in the extension host
  * to honour its proxy and certificate settings, so the result matches what VS Code itself sees.
  */
-function get(url: string, redirects = 5): Promise<http.IncomingMessage> {
+export function get(url: string, redirects = 5): Promise<http.IncomingMessage> {
   return new Promise((resolve, reject) => {
     const client = url.startsWith('https:') ? https : http;
     const request = client.get(url, { timeout: 15000 }, (response) => {
@@ -41,7 +42,7 @@ function get(url: string, redirects = 5): Promise<http.IncomingMessage> {
         get(new URL(response.headers.location, url).toString(), redirects - 1).then(resolve, reject);
       } else if (status !== 200) {
         response.resume();
-        reject(new RequestError(`${url} returned HTTP ${status}`));
+        reject(new RequestError(`${url} returned HTTP ${status}`, undefined, status));
       } else {
         resolve(response);
       }
@@ -62,9 +63,8 @@ export async function getJson<T>(url: string): Promise<T> {
   return JSON.parse(Buffer.concat(chunks).toString('utf8')) as T;
 }
 
-/** Downloads to a temporary file next to destination and renames it once complete. */
-export async function download(url: string, destination: string): Promise<void> {
-  const response = await get(url);
+/** Saves a response to a temporary file next to destination and renames it once complete. */
+export async function save(response: http.IncomingMessage, destination: string): Promise<void> {
   const partial = `${destination}.partial`;
   await new Promise<void>((resolve, reject) => {
     const file = fs.createWriteStream(partial);

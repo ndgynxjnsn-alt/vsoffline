@@ -97,7 +97,7 @@ async function runChecks(context: vscode.ExtensionContext, url: string | undefin
     log.appendLine(`Could not set remote.serverDownloadBaseUrl: ${(err as Error).message}`);
   }
 
-  const reachability = await checkReachable(url, sudo);
+  const reachability = await checkReachable(context, url, sudo);
   if (reachability === 'reachable') {
     const platforms = vscode.workspace.getConfiguration(SECTION).get<string[]>('serverCachePlatforms', ['linux-x64']);
     await fillServerCache(context, url, product, platforms, log);
@@ -116,10 +116,23 @@ async function runChecks(context: vscode.ExtensionContext, url: string | undefin
  * Requests the marketplace from within VS Code. On certificate errors the user may import a CA certificate,
  * which only takes effect after a restart.
  */
-async function checkReachable(url: string, sudo: Sudo): Promise<'reachable' | 'certificateImported' | 'unreachable'> {
+async function checkReachable(
+  context: vscode.ExtensionContext,
+  url: string,
+  sudo: Sudo,
+): Promise<'reachable' | 'certificateImported' | 'unreachable'> {
   try {
-    await getJson(`${url}/api/health`);
+    const health = await getJson<{ url: string }>(`${url}/api/health`);
     log.appendLine(`${url} is reachable`);
+    // Download links and redirects are built from the server's configured url
+    const key = `urlMismatch:${url}:${health.url}`;
+    if (health.url !== url && !context.globalState.get<boolean>(key)) {
+      await context.globalState.update(key, true);
+      log.appendLine(`The server is configured as ${health.url}, not ${url}`);
+      vscode.window.showWarningMessage(
+        `The offline marketplace is configured with PUBLIC_URL ${health.url}, but VS Code uses ${url}. Downloads will fail unless both match.`,
+      );
+    }
     return 'reachable';
   } catch (err) {
     const error = err as RequestError;

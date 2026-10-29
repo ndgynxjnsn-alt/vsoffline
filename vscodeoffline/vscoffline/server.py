@@ -54,14 +54,15 @@ class VSCBinaryFromCommitId(object):
         updatedir = os.path.join(vsc.ARTIFACTS_INSTALLERS, platform, buildquality)
         if not os.path.exists(updatedir):
             log.warning(f'Update build directory does not exist at {updatedir}. Check sync or sync configuration.')
-            resp.status = falcon.HTTP_500
+            resp.status = falcon.HTTP_404
             return
         jsonpath = os.path.join(updatedir, f'{commitid}.json')
         updatejson = vsc.Utility.load_json(jsonpath)
         if not updatejson:
+            # Typically a client older or newer than the synced build
             resp.content = f'Unable to load {jsonpath}'
             log.warning(resp.content)
-            resp.status = falcon.HTTP_500
+            resp.status = falcon.HTTP_404
             return
         name = updatejson['name']
         updatepath = vsc.Utility.first_file(updatedir, f'vscode-{name}.*')
