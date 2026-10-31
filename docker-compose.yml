@@ -32,3 +32,4 @@ services:
       - ./certs/:/certs/:ro
     environment:
       URLROOT: ${PUBLIC_URL:?Set PUBLIC_URL in .env}
+      REWRITE_HOSTS: ${REWRITE_HOSTS-update.code.visualstudio.com,marketplace.visualstudio.com}

@@ -16,7 +16,7 @@ import uuid
 import zipfile
 import logging as log
 from distutils.version import LooseVersion
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
 import falcon
 from defusedxml import ElementTree
@@ -34,11 +34,21 @@ CHUNK = 1024 * 1024
 VSIX_NS = {'v': 'http://schemas.microsoft.com/developer/vsx-schema/2011'}
 VSIX_PACKAGE = 'Microsoft.VisualStudio.Services.VSIXPackage'
 VSIX_MANIFEST = 'Microsoft.VisualStudio.Services.VsixManifest'
+VSIX_SIGNATURE = 'Microsoft.VisualStudio.Services.VsixSignature'
+CODE_MANIFEST = 'Microsoft.VisualStudio.Code.Manifest'
+PRIVATE_PROPERTY = 'PrivateMarketplace'
 TARGET_PLATFORMS = ['win32-x64', 'win32-arm64', 'linux-x64', 'linux-arm64', 'linux-armhf', 'alpine-x64',
                     'alpine-arm64', 'darwin-x64', 'darwin-arm64', 'web']
 NAME_RE = re.compile(r'^[A-Za-z0-9][A-Za-z0-9_-]*$')
 VERSION_RE = re.compile(r'^[0-9A-Za-z][0-9A-Za-z.+-]*$')
 ASSET_RE = re.compile(r'^[A-Za-z0-9.]+$')
+
+# Hosts hardcoded in extension code which are replaced by URLROOT, and the files in a VSIX they are replaced in.
+# Documentation is left alone, as changing a VSIX invalidates its marketplace signature
+REWRITE_HOSTS = [host for host in os.environ.get(
+    'REWRITE_HOSTS', 'update.code.visualstudio.com,marketplace.visualstudio.com').split(',') if host]
+REWRITE_SUFFIXES = ('.js', '.mjs', '.cjs', '.json')
+MAX_REWRITE_SIZE = 256 * 1024 * 1024
 
 # Serialises all writes to the artifact directory
 LOCK = threading.Lock()
@@ -77,6 +87,77 @@ def write_stream(stream, destination, limit=None):
                 raise falcon.HTTPPayloadTooLarge(description=f'Upload exceeds {limit} bytes')
             f.write(chunk)
     return size
+
+
+def rewrite_content(content):
+    pattern = rb'https?://(?:' + b'|'.join(re.escape(host.encode()) for host in REWRITE_HOSTS) + rb')(?![A-Za-z0-9.-])'
+    return re.sub(pattern, lambda _: vsc.URLROOT.encode(), content)
+
+
+def rewrite_vsix(vsixpath):
+    """Replaces the hardcoded hosts inside a VSIX. Returns whether anything changed"""
+    changed = False
+    temporary = vsixpath + '.rewrite'
+    try:
+        with zipfile.ZipFile(vsixpath) as source, zipfile.ZipFile(temporary, 'w') as target:
+            for info in source.infolist():
+                content = source.read(info) if info.file_size <= MAX_REWRITE_SIZE else None
+                if content is None:
+                    log.warning(f'Not rewriting {info.filename} of {vsixpath}, it is too large')
+                    with source.open(info) as entry, target.open(info, 'w', force_zip64=True) as output:
+                        shutil.copyfileobj(entry, output, CHUNK)
+                    continue
+                if info.filename.lower().endswith(REWRITE_SUFFIXES):
+                    rewritten = rewrite_content(content)
+                    changed = changed or rewritten != content
+                    content = rewritten
+                target.writestr(info, content)
+        if changed:
+            os.replace(temporary, vsixpath)
+    finally:
+        if os.path.exists(temporary):
+            os.remove(temporary)
+    return changed
+
+
+def rewrite_extension(extensiondir):
+    """
+    Points the code of a stored extension at URLROOT. A changed VSIX no longer matches its marketplace signature and
+    VS Code rejects a signature that does not match, so the signature is removed. VS Code only requires one for public
+    extensions, so the version is also marked private. Unchanged VSIX files keep their signature.
+    """
+    if not REWRITE_HOSTS or urlparse(vsc.URLROOT).hostname in REWRITE_HOSTS:
+        return False
+    extension = vsc.Utility.load_json(os.path.join(extensiondir, 'latest.json'))
+    if not extension or not extension.get('versions'):
+        return False
+    changed = False
+    for version in extension['versions']:
+        versiondir = os.path.join(extensiondir, version['version'], version.get('targetPlatform', ''))
+        vsixpath = os.path.join(versiondir, VSIX_PACKAGE)
+        if not os.path.isfile(vsixpath) or not rewrite_vsix(vsixpath):
+            continue
+        changed = True
+        manifestpath = os.path.join(versiondir, CODE_MANIFEST)
+        if os.path.isfile(manifestpath):
+            with open(manifestpath, 'rb') as f:
+                manifest = f.read()
+            with open(manifestpath, 'wb') as f:
+                f.write(rewrite_content(manifest))
+        signaturepath = os.path.join(versiondir, VSIX_SIGNATURE)
+        if os.path.exists(signaturepath):
+            os.remove(signaturepath)
+        version['files'] = [file for file in version.get('files', []) if file['assetType'] != VSIX_SIGNATURE]
+        properties = version.get('properties') or []
+        if not any(prop['key'] == PRIVATE_PROPERTY for prop in properties):
+            properties.append({'key': PRIVATE_PROPERTY, 'value': 'true'})
+        version['properties'] = properties
+        log.info(f'Rewrote hardcoded urls in {vsixpath}, removed its signature')
+    if changed:
+        vsc.Utility.write_json(os.path.join(extensiondir, 'latest.json'), extension)
+        for version in {version['version'] for version in extension['versions']}:
+            vsc.Utility.write_json(os.path.join(extensiondir, version, 'extension.json'), extension)
+    return changed
 
 
 class VSIXIngester(object):
@@ -136,7 +217,7 @@ class VSIXIngester(object):
         properties = [{'key': prop.get('Id'), 'value': prop.get('Value')}
                       for prop in metadata.findall('v:Properties/v:Property', VSIX_NS)]
         # Uploads carry no marketplace signature. VS Code only requires one for public extensions
-        properties.append({'key': 'PrivateMarketplace', 'value': 'true'})
+        properties.append({'key': PRIVATE_PROPERTY, 'value': 'true'})
 
         with LOCK:
             extensiondir = find_extension_dir(identity) or os.path.join(vsc.ARTIFACTS_EXTENSIONS, identity)
@@ -203,6 +284,7 @@ class VSIXIngester(object):
             vsc.Utility.write_json(os.path.join(extensiondir, 'latest.json'), extension)
             vsc.Utility.write_json(os.path.join(extensiondir, version, 'extension.json'), extension)
             vsc.Utility.prune_extension_versions(extensiondir)
+            rewrite_extension(extensiondir)
 
         log.info(f'Stored uploaded extension {identity} {version} {target or ""}')
         return {'identity': identity, 'version': version, 'targetPlatform': target}
@@ -279,6 +361,7 @@ class BundleImporter(object):
                 shutil.move(os.path.join(src, version), os.path.join(dst, version))
             os.replace(os.path.join(src, 'latest.json'), os.path.join(dst, 'latest.json'))
             vsc.Utility.prune_extension_versions(dst)
+            rewrite_extension(dst)
             imported.append(f'{folder}@{latest_version(incoming)}')
         log.info(f'Imported {len(imported)} extensions, skipped {len(skipped)}')
         return {'imported': imported, 'skipped': skipped}

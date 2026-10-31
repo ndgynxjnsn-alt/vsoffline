@@ -45,6 +45,11 @@ docker build -q -t vscode-e2e e2e >/dev/null || exit 1
 docker build -q -t vscsync-e2e -f vscodeoffline/vscoffline/vscsync/Dockerfile vscodeoffline >/dev/null || exit 1
 docker build -q -t gallery-e2e -f docker/gallery.Dockerfile . >/dev/null || exit 1
 
+step "VSIX rewriting unit checks"
+docker run --rm --entrypoint sh -e FRONTEND_DIR=/nonexistent -v "$ROOT/e2e/test_rewrite.py:/opt/vscoffline/t.py:ro" gallery-e2e \
+  -c 'mkdir -p /artifacts/installers /artifacts/extensions; python3 -W ignore t.py' | grep -E 'FAIL' | sed 's/^/ /'
+check "all unit checks pass" test "${PIPESTATUS[0]}" = 0
+
 step "Sync (internet)"
 if [ "${FRESH:-}" = 1 ] || [ ! -f "$W/bundle.tar" ]; then
   rm -rf "$W/online" && mkdir -p "$W/online/artifacts"
@@ -78,6 +83,12 @@ curl_gallery -X POST --data-binary @"$W/bundle.tar" "$URL/api/import" | sed 's/^
 curl_gallery -X POST --data-binary @"$ROOT/extension/offline-marketplace.vsix" "$URL/api/upload/vsix" | sed 's/^/  /'; echo
 check "update check endpoint knows yaml" curl_gallery -f "$URL/_apis/public/gallery/vscode/redhat/vscode-yaml/latest"
 check "server for client commit is served" curl_gallery -f -o /dev/null -L "$URL/commit:$DEB_COMMIT/server-linux-x64/stable"
+curl_gallery "$URL/_apis/public/gallery/vscode/ms-vscode-remote/remote-containers/latest" >"$W/devc.json"
+curl_gallery "$URL/_apis/public/gallery/vscode/redhat/vscode-yaml/latest" >"$W/yaml.json"
+check "rewritten Dev Containers no longer advertises a signature" sh -c "! grep -q VsixSignature '$W/devc.json'"
+check "rewritten Dev Containers is marked private" grep -q PrivateMarketplace "$W/devc.json"
+check "yaml (only readme links) keeps its signature and stays public" sh -c "grep -q VsixSignature '$W/yaml.json' && ! grep -q PrivateMarketplace '$W/yaml.json'"
+check "downloaded bundle stays unmodified" sh -c "unzip -p '$W/online/artifacts/extensions/ms-vscode-remote.remote-containers/'*/Microsoft.VisualStudio.Services.VSIXPackage extension/package.json | grep -q update.code.visualstudio.com"
 
 step "Prepare client"
 rm -rf "$W/client" "$W/home" "$W/workspace" && mkdir -p "$W/client/data/User" "$W/home/.pki/nssdb" "$W/workspace"
@@ -131,6 +142,8 @@ with zipfile.ZipFile(sys.argv[1]) as source, zipfile.ZipFile(sys.argv[2], 'w') a
 PY
 check "upload of 1.0.1 accepted" curl_gallery -f -X POST --data-binary @"$W/offline-marketplace-1.0.1.vsix" "$URL/api/upload/vsix"
 check "Dev Containers installed from gallery" compgen -G "$W/client/ext/ms-vscode-remote.remote-containers-*"
+check "installed Dev Containers code has no update.code.visualstudio.com" sh -c "! grep -rlE 'https?://update\.code\.visualstudio\.com' --include=*.js --include=*.json $W/client/ext/ms-vscode-remote.remote-containers-*"
+check "installed Dev Containers code uses the gallery" grep -q "$URL/api/update/server-linux-x64/" "$(compgen -G "$W/client/ext/ms-vscode-remote.remote-containers-*")/dist/extension/extension.js"
 
 step "First start: extension update and server cache"
 CACHE="$W/client/data/User/globalStorage/ms-vscode-remote.remote-containers/serverCache/$DEB_COMMIT/vscode-server-linux-x64.tar.gz"
@@ -140,7 +153,8 @@ extension_log | sed 's/^/  log: /'
 check "VS Code asked the gallery for yaml's latest version" sh -c "docker logs e2e-gallery 2>&1 | grep -q 'GET /_apis/public/gallery/vscode/redhat/vscode-yaml/latest HTTP/1.1\" 200'"
 check "yaml auto-updated to the gallery version" compgen -G "$W/client/ext/redhat.vscode-yaml-2.*"
 check "uploaded extension auto-updated to 1.0.1" test -d "$W/client/ext/offline.offline-marketplace-1.0.1"
-check "remote.serverDownloadBaseUrl set" grep -q "\"remote.serverDownloadBaseUrl\": \"$URL\"" "$W/client/data/User/settings.json"
+# Effective value: the user setting, or the packaged default once the VSIX was rewritten
+check "remote.serverDownloadBaseUrl points at the gallery" sh -c "grep -q '\"remote.serverDownloadBaseUrl\": \"$URL\"' '$W/client/data/User/settings.json' || grep -A4 '\"remote.serverDownloadBaseUrl\"' $W/client/ext/ms-vscode-remote.remote-containers-*/package.json | grep -q '\"default\": \"$URL\"'"
 check "server archive cached for Dev Containers" test -s "$CACHE"
 check "cached server matches gallery file" cmp -s "$CACHE" "$W/artifacts/installers/server-linux-x64/stable/vscode-$DEB_VERSION.tar.gz"
 check "no 404s from the gallery" sh -c "! docker logs e2e-gallery 2>&1 | grep -E '\" 404 '"
@@ -176,6 +190,39 @@ check "dev container was created" test -n "$DEVC"
 check "VS Code server $DEB_VERSION runs in the dev container" \
   docker exec "$DEVC" sh -c "ls -d /root/.vscode-server/bin/$DEB_COMMIT || ls -d /root/.vscode-server/cli/servers/Stable-$DEB_COMMIT"
 [ -n "$DEVC" ] && docker rm -f "$DEVC" >/dev/null
+
+step "Everything in artifacts.txt: installs through signature checks and activates"
+if [ "${FRESH:-}" = 1 ] || [ ! -d "$W/full/artifacts/extensions" ]; then
+  rm -rf "$W/full" && mkdir -p "$W/full/artifacts"
+  docker run --rm -u "$UIDGID" -v "$W/full/artifacts:/artifacts" -v "$ROOT/artifacts.txt:/list.txt:ro" vscsync-e2e \
+    python3 sync.py --artifacts /artifacts --update-extensions --extension-list /list.txt --target-platforms linux-x64 \
+    --vscode-version 1.105.0 >/dev/null 2>&1
+fi
+tar -cf "$W/full.tar" -C "$W/full/artifacts" extensions
+curl_gallery -X POST --data-binary @"$W/full.tar" "$URL/api/import" | python3 -c 'import json,sys; r=json.load(sys.stdin)["extensions"]; print("  imported", len(r["imported"]), "skipped", len(r["skipped"]))'
+INSTALL=$(grep -vE '^\s*(#|$)' artifacts.txt | sed 's/^/--install-extension /' | tr '\n' ' ')
+client "NODE_EXTRA_CA_CERTS=$W/certs/ca.crt $W/VSCode-linux-x64/bin/code $CODE_ARGS $INSTALL" 2>&1 | grep -E 'rror|Failed' | grep -v DEP0169 | sed 's/^/  /'
+for id in $(grep -vE '^\s*(#|$)' artifacts.txt); do
+  check "$id installed" compgen -G "$W/client/ext/$id-*"
+done
+printf 'import os\nprint(os.getcwd())\n' >"$W/workspace/a.py"
+printf '{ "a": 1 }\n' >"$W/workspace/a.yaml"
+printf 'int main() { return 0; }\n' >"$W/workspace/a.cpp"
+# Language activation needs the file's editor to load, so one file per session
+activate() { # activate file extension-ids...
+  local file=$1; shift
+  touch "$W/.launch"; sleep 1
+  run_gui 90 "$W/workspace $W/workspace/$file"
+  local exthost; exthost=$(find "$W/client/data/logs" -name exthost.log -newer "$W/.launch" | tail -1)
+  grep -hE 'Activating extension .* failed|Extension host .* (crashed|terminated)' "$exthost" | cut -c1-240 | sed 's/^/  /'
+  for id in "$@"; do
+    check "$id activated" grep -qiE "ExtensionService#_doActivateExtension $id" "$exthost"
+  done
+  check "no extension failed to activate with $file" sh -c "! grep -qE 'Activating extension .* failed' '$exthost'"
+}
+activate a.py ms-python.python ms-python.vscode-pylance
+activate a.cpp ms-vscode.cpptools
+activate a.yaml redhat.vscode-yaml
 
 step "Result"
 gallery_log >"$W/gallery.log"

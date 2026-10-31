@@ -71,6 +71,17 @@ import, frontend API). `frontend/` is the React UI, `extension/` the OfflineMark
    extension versions and old VS Code installers/servers, so clients have to update to keep Dev Containers working. Users can upload their own VSIX files there too; those are marked private, so VS Code installs
    them without a marketplace signature, and they can never replace a mirrored marketplace extension.
 
+### Hardcoded URLs in VSIX files
+
+On import and upload, the gallery replaces `update.code.visualstudio.com` and `marketplace.visualstudio.com` with
+`PUBLIC_URL` in the `.js`, `.mjs`, `.cjs` and `.json` files inside each VSIX (`REWRITE_HOSTS` sets the hosts, empty turns
+this off). Readmes and other documentation stay as they are. Bundles are not changed, only the gallery's stored copy, so
+after changing `PUBLIC_URL` import the bundle again.
+
+A changed VSIX no longer matches its marketplace signature, so the gallery removes the signature and marks that version
+private, which is the only way VS Code will install it. For those extensions clients no longer verify Microsoft's
+signature and trust the gallery instead. Extensions without such URLs stay byte-identical and signed.
+
 ### Clients
 
 Install VS Code from *Downloads*, then the OfflineMarketplace extension (`code --install-extension offline-marketplace.vsix`,
